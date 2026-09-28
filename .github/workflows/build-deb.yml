@@ -1,0 +1,26 @@
+name: build-deb
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: waruhachi/theos-action@v2.4.6
+        with:
+          theos-src: 'roothide/theos'
+          theos-branch: 'master'
+          sdks-src: 'theos/sdks'
+          sdks-branch: 'master'
+          libgcuniversal: false
+          altlist: false
+      - name: Build
+        working-directory: probe
+        run: make clean package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=roothide
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb
+          path: probe/packages/*.deb
+          if-no-files-found: error

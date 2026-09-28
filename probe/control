@@ -1,0 +1,9 @@
+Package: com.maurice.camcaptureprobe
+Name: CamCaptureProbe
+Version: 1.0.0
+Architecture: iphoneos-arm64e
+Description: Probe: injiziert in cameracaptured und listet BW/FigCapture-Klassen via HTTP 8798
+Maintainer: Maurice
+Author: Maurice
+Section: Tweaks
+Depends: mobilesubstrate
