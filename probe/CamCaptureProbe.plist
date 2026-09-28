@@ -4,9 +4,11 @@
 <dict>
 	<key>Filter</key>
 	<dict>
-		<key>Executables</key>
+		<key>Bundles</key>
 		<array>
-			<string>cameracaptured</string>
+			<string>com.apple.camera</string>
+			<string>com.apple.mobilesafari</string>
+			<string>com.apple.facetime</string>
 		</array>
 	</dict>
 </dict>
