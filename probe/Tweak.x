@@ -105,29 +105,46 @@ static void serve_classes(void) {
 
 __attribute__((constructor))
 static void probe_ctor(void) {
-    // dlopen der Capture-Frameworks (wie v2-cctor)
-    dlopen("/System/Library/PrivateFrameworks/CMCaptureCore.framework/CMCaptureCore", RTLD_NOW);
-    dlopen("/System/Library/PrivateFrameworks/CMCapture.framework/CMCapture", RTLD_NOW);
-    dlopen("/System/Library/PrivateFrameworks/FrontBoardServices.framework/FrontBoardServices", RTLD_NOW);
+    // KEIN dlopen — der war moeglicherweise der ctor-Killer im App-Sandbox.
+    // Beweis: (1) Datei im App-Container, (2) Datei in Documents (SSH-sichtbar),
+    // (3) Loopback-TCP 8798.
 
-    // Loopback-TCP-Beweis: binden
-    servfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (servfd < 0) return;
-    int on = 1;
-    setsockopt(servfd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
-    struct sockaddr_in a;
-    memset(&a, 0, sizeof(a));
-    a.sin_family = AF_INET;
-    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    a.sin_port = htons(LISTEN_PORT);
-    if (bind(servfd, (struct sockaddr *)&a, sizeof(a)) != 0) {
-        close(servfd);
-        servfd = -1;
-        return;
+    // (1) App-Container-Marker
+    NSString *home = NSHomeDirectory();
+    NSString *mk1 = [home stringByAppendingPathComponent:@"ccp_injected.txt"];
+    FILE *m1 = fopen([mk1 UTF8String], "a");
+    if (m1) {
+        fprintf(m1, "%ld ctor pid=%d proc=%s\n", (long)time(NULL), getpid(),
+                [[NSProcessInfo processInfo].processName UTF8String] ?: "?");
+        fclose(m1);
     }
-    listen(servfd, 8);
-    // einfacher Thread für accept-schleife
-    pthread_t th;
-    pthread_create(&th, NULL, (void *(*)(void *))serve_classes, NULL);
-    pthread_detach(th);
+
+    // (2) SSH-sichtbarer Marker (mobile Documents)
+    FILE *m2 = fopen("/var/mobile/Documents/ccp_injected.txt", "a");
+    if (m2) {
+        fprintf(m2, "%ld ctor pid=%d proc=%s\n", (long)time(NULL), getpid(),
+                [[NSProcessInfo processInfo].processName UTF8String] ?: "?");
+        fclose(m2);
+    }
+
+    // (3) Loopback-TCP 8798
+    servfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (servfd >= 0) {
+        int on = 1;
+        setsockopt(servfd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+        struct sockaddr_in a;
+        memset(&a, 0, sizeof(a));
+        a.sin_family = AF_INET;
+        a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        a.sin_port = htons(LISTEN_PORT);
+        if (bind(servfd, (struct sockaddr *)&a, sizeof(a)) == 0) {
+            listen(servfd, 8);
+            pthread_t th;
+            pthread_create(&th, NULL, (void *(*)(void *))serve_classes, NULL);
+            pthread_detach(th);
+        } else {
+            close(servfd);
+            servfd = -1;
+        }
+    }
 }
