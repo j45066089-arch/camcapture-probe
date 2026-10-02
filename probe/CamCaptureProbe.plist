@@ -4,13 +4,9 @@
 <dict>
 	<key>Filter</key>
 	<dict>
-		<key>Bundles</key>
+		<key>Executables</key>
 		<array>
-			<string>com.apple.camera</string>
-			<string>com.apple.mobilesafari</string>
-			<string>com.apple.facetime</string>
-			<string>com.revolut.revolut</string>
-			<string>com.apple.springboard</string>
+			<string>cameracaptured</string>
 		</array>
 	</dict>
 </dict>
