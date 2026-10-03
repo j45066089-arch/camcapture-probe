@@ -171,28 +171,28 @@ typedef void (*render2_t)(id, SEL, void *, void *);
 
 static void hk_emit1(id self, SEL sel, void *sb) {
     ccp_latch(&g_hit1, "com.maurice.vcam.hit1");
-    ccp_strip_meta((CMSampleBufferRef)sb);
+    
     ccp_diag((CMSampleBufferRef)sb);
     ccp_paint((CMSampleBufferRef)sb);
     if (imp_bwnode_emit) ((emit1_t)imp_bwnode_emit)(self, sel, sb);
 }
 static void hk_emit2(id self, SEL sel, void *sb, void *inp) {
     ccp_latch(&g_hit2, "com.maurice.vcam.hit2");
-    ccp_strip_meta((CMSampleBufferRef)sb);
+    
     ccp_diag((CMSampleBufferRef)sb);
     ccp_paint((CMSampleBufferRef)sb);
     if (imp_bwnode_emit2) ((emit2_t)imp_bwnode_emit2)(self, sel, sb, inp);
 }
 static void hk_pxt(id self, SEL sel, void *sb) {
     ccp_latch(&g_hit3, "com.maurice.vcam.hit3");
-    ccp_strip_meta((CMSampleBufferRef)sb);
+    
     ccp_diag((CMSampleBufferRef)sb);
     ccp_paint((CMSampleBufferRef)sb);
     if (imp_pixel_transfer) ((emit1_t)imp_pixel_transfer)(self, sel, sb);
 }
 static void hk_imgqueue(id self, SEL sel, void *sb, void *inp) {
     ccp_latch(&g_hit4, "com.maurice.vcam.hit4");
-    ccp_strip_meta((CMSampleBufferRef)sb);
+    
     ccp_diag((CMSampleBufferRef)sb);
     ccp_paint((CMSampleBufferRef)sb);
     if (imp_imgqueue_sink) ((render2_t)imp_imgqueue_sink)(self, sel, sb, inp);
