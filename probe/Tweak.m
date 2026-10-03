@@ -7,28 +7,26 @@
 #import <stdatomic.h>
 #import <string.h>
 
-/* CamCaptureProbe v13 — Klassen-Survey als Bild-Streifen + Face-Strip
+/* CamCaptureProbe v15 — Face-Detection an der QUELLE killen
  *
- * Face-Tracking laeuft NICHT ueber Sample-Buffer-Attachments (v12 bewiesen:
- * Bild gesund, Tracking bleibt). Es ist ein eigener Node. Um den zu treffen,
- * brauche ich die Liste der EXISTIERENDEN Tracking-Klassen im Daemon.
+ * Survey (v14, live): im Daemon existieren
+ *   BWFaceDetectionNode  (s0)
+ *   BWMetadataSourceNode (s1)
+ *   BWImageQueueSinkNode (s7, Kontrolle)
+ * Die restlichen Face/Metadata-Klassen fehlen.
  *
- * Kanal: KEIN Datei-Write (sandbox-tot), KEIN log, KEIN Frida. -> Bild selbst.
+ * v15: Hooke die DETECTION-Nodes an ihrem sample-input und male den Puffer
+ * FLACH NEUTRAL (kein Gesicht auffindbar). Der Emit-Hook (Quadranten, Display)
+ * bleibt und laeuft danach -> Preview/Galerie weiterhin Muster, aber Tracking tot.
  *
- * Layout (plane-kodiert):
- *   OBERE Haelft = 4-Quadranten-Baseline (zeigt: Hook + Paint gesund).
- *   UNTERE Haelft in 8 vertikale Streifen. Streifen i:
- *     hell (235) = Klasse existiert, dunkel (16) = fehlt.
+ * Selector-Kandidaten pro Node (alle gehwit, first-match):
+ *   processSampleBuffer:forInput:
+ *   processSampleBuffer:
+ *   renderSampleBuffer:forInput:
  *
- * Streifen-Reihenfolge (links->rechts):
- *   1 BWFaceDetectionNode
- *   2 BWMetadataSourceNode
- *   3 FigCaptureMetadata
- *   4 BWFaceIntelligenceEstimator
- *   5 BWFaceSegmentation
- *   6 FigFaceDetect
- *   7 BWStillImageNode        (Kontrolle: muesste existieren, Video+Still)
- *   8 BWImageQueueSinkNode    (Kontrolle: existiert, unser Hook-Kandidat)
+ * Flat-Paint:
+ *   YUV planar: Y=128, UV=128 (mittelgrau, kein Kontrast).
+ *   BGRA: gleichmaessiges Grau 128.
  */
 
 static IMP imp_bwnode_emit    = NULL;
@@ -36,47 +34,47 @@ static IMP imp_bwnode_emit2   = NULL;
 static IMP imp_pixel_transfer = NULL;
 static IMP imp_imgqueue_sink  = NULL;
 
+static IMP imp_face_proc     = NULL;   // BWFaceDetectionNode hook
+static IMP imp_meta_proc     = NULL;   // BWMetadataSourceNode hook
+
 static _Atomic int  g_hit1 = 0, g_hit2 = 0, g_hit3 = 0, g_hit4 = 0;
+static _Atomic int  g_face_hook = 0, g_meta_hook = 0;
 static _Atomic long g_frame = 0;
 
-static const char *g_survey_names[8] = {
-    "BWFaceDetectionNode",
-    "BWMetadataSourceNode",
-    "FigCaptureMetadata",
-    "BWFaceIntelligenceEstimator",
-    "BWFaceSegmentation",
-    "BWFaceDetect",
-    "BWStillImageNode",
-    "BWImageQueueSinkNode",
-};
-
-/* Existenz-Bitset (0..7 -> Klassen 1..8) — im ctor befüllt */
-static _Atomic unsigned g_survey_bits = 0;
-
-/* Nur Face-/Detect-Keys entfernen — MetadataDictionary / AE / Fokus bleiben. */
-static void ccp_strip_face(CMSampleBufferRef sb) {
+/* ---------- Flat-paint (kein Gesicht auffindbar) ---------- */
+static void ccp_paint_flat(CMSampleBufferRef sb) {
     if (!sb) return;
-    const CFStringRef keys[] = {
-        CFSTR("DetectedFaceInfo"),
-        CFSTR("DetectedFacesInfo"),
-        CFSTR("FacesArray"),
-        CFSTR("FaceRectDisplayBuffer"),
-    };
-    for (size_t i = 0; i < sizeof(keys)/sizeof(keys[0]); i++)
-        CMSetAttachment(sb, keys[i], NULL, kCMAttachmentMode_ShouldPropagate);
+    CVImageBufferRef img = CMSampleBufferGetImageBuffer(sb);
+    if (!img) return;
+    if (kCVReturnSuccess != CVPixelBufferLockBaseAddress(img, 0)) return;
+
+    size_t np = CVPixelBufferGetPlaneCount(img);
+    if (np == 0) {
+        uint8_t *base = (uint8_t *)CVPixelBufferGetBaseAddress(img);
+        if (base) {
+            size_t h   = CVPixelBufferGetHeight(img);
+            size_t bpr = CVPixelBufferGetBytesPerRow(img);
+            for (size_t y = 0; y < h; y++) {
+                uint8_t *row = base + y * bpr;
+                for (size_t x = 0; x < bpr; x++) row[x] = 128;
+            }
+        }
+    } else {
+        for (size_t p = 0; (int)p < (int)np; p++) {
+            uint8_t *pp = (uint8_t *)CVPixelBufferGetBaseAddressOfPlane(img, p);
+            if (!pp) continue;
+            size_t ph   = CVPixelBufferGetHeightOfPlane(img, p);
+            size_t pbpr = CVPixelBufferGetBytesPerRowOfPlane(img, p);
+            for (size_t y = 0; y < ph; y++) memset(pp + y * pbpr, 128, pbpr);
+        }
+    }
+    CVPixelBufferUnlockBaseAddress(img, 0);
 }
 
-static inline uint8_t survey_luma(size_t x, size_t y, size_t w, size_t h) {
-    if (y < h/2) {
-        /* obere Hälfte: 4-Quadranten-Baseline */
-        if (y < h/4) return (x < w/2) ? 40 : 90;
-        else         return (x < w/2) ? 90 : 40;
-    }
-    /* untere Haelft: 8 Streifen */
-    unsigned bits = (unsigned)atomic_load(&g_survey_bits);
-    size_t stripe = (x * 8) / w;   /* 0..7 */
-    if (stripe > 7) stripe = 7;
-    return (bits & (1u << stripe)) ? 235 : 16;
+/* ---------- Display-Paint: 4 Quadranten (v11-bewaehrt) ---------- */
+static inline uint8_t quad_luma(size_t x, size_t y, size_t w, size_t h) {
+    if (y < h/2) return (x < w/2) ? 40 : 90;
+    return (x < w/2) ? 150 : 210;
 }
 
 static void ccp_paint(CMSampleBufferRef sb) {
@@ -93,18 +91,14 @@ static void ccp_paint(CMSampleBufferRef sb) {
             size_t h   = CVPixelBufferGetHeight(img);
             size_t bpr = CVPixelBufferGetBytesPerRow(img);
             size_t w   = CVPixelBufferGetWidth(img);
-            unsigned bits = (unsigned)atomic_load(&g_survey_bits);
             for (size_t y = 0; y < h; y++) {
                 uint8_t *row = base + y * bpr;
                 for (size_t x = 0; x < w; x++) {
                     uint8_t B, G, R;
                     if (y < h/2) {
-                        if (y < h/4) { if (x < w/2) {B=255;G=0;R=0;} else {B=0;G=255;R=0;} }
-                        else         { if (x < w/2) {B=255;G=0;R=255;} else {B=255;G=255;R=0;} }
+                        if (x < w/2) { B=255; G=0;   R=0; } else { B=0; G=255; R=0; }
                     } else {
-                        size_t stripe = (x * 8) / w; if (stripe > 7) stripe = 7;
-                        if (bits & (1u << stripe)) { B=255; G=255; R=255; } /* hell */
-                        else                        { B=16;  G=16;  R=16;  } /* dunkel */
+                        if (x < w/2) { B=255; G=0;   R=255; } else { B=255; G=255; R=0; }
                     }
                     row[x*4+0]=B; row[x*4+1]=G; row[x*4+2]=R; row[x*4+3]=255;
                 }
@@ -118,7 +112,7 @@ static void ccp_paint(CMSampleBufferRef sb) {
         if (y0) {
             for (size_t y = 0; y < yh; y++) {
                 uint8_t *row = y0 + y * ybpr;
-                for (size_t x = 0; x < yw; x++) row[x] = survey_luma(x, y, yw, yh);
+                for (size_t x = 0; x < yw; x++) row[x] = quad_luma(x, y, yw, yh);
                 if (ybpr > yw) memset(row + yw, 0, ybpr - yw);
             }
         }
@@ -145,29 +139,59 @@ typedef void (*emit1_t)(id, SEL, void *);
 typedef void (*emit2_t)(id, SEL, void *, void *);
 typedef void (*render2_t)(id, SEL, void *, void *);
 
+/* Detection-Hooks: flat-painten, dann Original-IMP (falls vorhanden) */
+static void hk_face1(id self, SEL sel, void *sb) {
+    atomic_store(&g_face_hook, 1);
+    ccp_paint_flat((CMSampleBufferRef)sb);
+    if (imp_face_proc) ((emit1_t)imp_face_proc)(self, sel, sb);
+}
+static void hk_face2(id self, SEL sel, void *sb, void *inp) {
+    atomic_store(&g_face_hook, 1);
+    ccp_paint_flat((CMSampleBufferRef)sb);
+    if (imp_face_proc) ((emit2_t)imp_face_proc)(self, sel, sb, inp);
+}
+static void hk_meta1(id self, SEL sel, void *sb) {
+    atomic_store(&g_meta_hook, 1);
+    ccp_paint_flat((CMSampleBufferRef)sb);
+    if (imp_meta_proc) ((emit1_t)imp_meta_proc)(self, sel, sb);
+}
+static void hk_meta2(id self, SEL sel, void *sb, void *inp) {
+    atomic_store(&g_meta_hook, 1);
+    ccp_paint_flat((CMSampleBufferRef)sb);
+    if (imp_meta_proc) ((emit2_t)imp_meta_proc)(self, sel, sb, inp);
+}
+
 static void hk_emit1(id self, SEL sel, void *sb) {
     ccp_latch(&g_hit1, "com.maurice.vcam.hit1");
-    ccp_strip_face((CMSampleBufferRef)sb);
     ccp_paint((CMSampleBufferRef)sb);
     if (imp_bwnode_emit) ((emit1_t)imp_bwnode_emit)(self, sel, sb);
 }
 static void hk_emit2(id self, SEL sel, void *sb, void *inp) {
     ccp_latch(&g_hit2, "com.maurice.vcam.hit2");
-    ccp_strip_face((CMSampleBufferRef)sb);
     ccp_paint((CMSampleBufferRef)sb);
     if (imp_bwnode_emit2) ((emit2_t)imp_bwnode_emit2)(self, sel, sb, inp);
 }
 static void hk_pxt(id self, SEL sel, void *sb) {
     ccp_latch(&g_hit3, "com.maurice.vcam.hit3");
-    ccp_strip_face((CMSampleBufferRef)sb);
     ccp_paint((CMSampleBufferRef)sb);
     if (imp_pixel_transfer) ((emit1_t)imp_pixel_transfer)(self, sel, sb);
 }
 static void hk_imgqueue(id self, SEL sel, void *sb, void *inp) {
     ccp_latch(&g_hit4, "com.maurice.vcam.hit4");
-    ccp_strip_face((CMSampleBufferRef)sb);
     ccp_paint((CMSampleBufferRef)sb);
     if (imp_imgqueue_sink) ((render2_t)imp_imgqueue_sink)(self, sel, sb, inp);
+}
+
+/* Hook-Helfer: beide Selector-Formen fuer einen Node probieren */
+static void ccp_hook_node_both(Class c, IMP *out, IMP imp1, IMP imp2) {
+    if (!c) return;
+    Method m;
+    m = class_getInstanceMethod(c, sel_registerName("processSampleBuffer:forInput:"));
+    if (m) { *out = method_getImplementation(m); method_setImplementation(m, imp2); return; }
+    m = class_getInstanceMethod(c, sel_registerName("processSampleBuffer:"));
+    if (m) { *out = method_getImplementation(m); method_setImplementation(m, imp1); return; }
+    m = class_getInstanceMethod(c, sel_registerName("renderSampleBuffer:forInput:"));
+    if (m) { *out = method_getImplementation(m); method_setImplementation(m, imp2); return; }
 }
 
 static void ccp_hook(Class c, SEL sel, IMP *orig_out, IMP newImp) {
@@ -180,24 +204,17 @@ static void ccp_hook(Class c, SEL sel, IMP *orig_out, IMP newImp) {
 __attribute__((constructor)) void ccp_init(void) {
     notify_post("com.maurice.vcam.ctor");
 
-    unsigned bits = 0;
-    const char *snames[8] = {
-        "com.maurice.vcam.s0", "com.maurice.vcam.s1", "com.maurice.vcam.s2",
-        "com.maurice.vcam.s3", "com.maurice.vcam.s4", "com.maurice.vcam.s5",
-        "com.maurice.vcam.s6", "com.maurice.vcam.s7",
-    };
-    for (int i = 0; i < 8; i++) {
-        if (objc_getClass(g_survey_names[i])) {
-            bits |= (1u << i);
-            notify_post(snames[i]);   /* live-post, snoop muss VOR inject lauschen */
-        }
-    }
-    atomic_store(&g_survey_bits, bits);
-
     Class bw  = objc_getClass("BWNodeOutput");
     Class bwp = objc_getClass("BWPixelTransferNode");
     Class iq  = objc_getClass("BWImageQueueSinkNode");
+    Class face = objc_getClass("BWFaceDetectionNode");
+    Class meta = objc_getClass("BWMetadataSourceNode");
 
+    /* Detection-Nodes flat-paint (Gesicht unmöglich) */
+    ccp_hook_node_both(face, &imp_face_proc, (IMP)hk_face1, (IMP)hk_face2);
+    ccp_hook_node_both(meta, &imp_meta_proc, (IMP)hk_meta1, (IMP)hk_meta2);
+
+    /* Emit-Pfad (Display) weiterhin Quadranten */
     if (bw) {
         ccp_hook(bw, sel_registerName("emitSampleBuffer:"), &imp_bwnode_emit, (IMP)hk_emit1);
         ccp_hook(bw, sel_registerName("emitSampleBuffer:forInput:"), &imp_bwnode_emit2, (IMP)hk_emit2);
