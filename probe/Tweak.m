@@ -34,6 +34,19 @@ static inline uint8_t quad_luma(size_t x, size_t y, size_t w, size_t h) {
     return (x < w/2) ? 150 : 210;
 }
 
+/* Nur Face-/Detect-Keys entfernen — MetadataDictionary / AE / Fokus bleiben. */
+static void ccp_strip_face(CMSampleBufferRef sb) {
+    if (!sb) return;
+    const CFStringRef keys[] = {
+        CFSTR("DetectedFaceInfo"),
+        CFSTR("DetectedFacesInfo"),
+        CFSTR("FacesArray"),
+        CFSTR("FaceRectDisplayBuffer"),
+    };
+    for (size_t i = 0; i < sizeof(keys)/sizeof(keys[0]); i++)
+        CMSetAttachment(sb, keys[i], NULL, kCMAttachmentMode_ShouldPropagate);
+}
+
 static void ccp_paint(CMSampleBufferRef sb) {
     if (!sb) return;
     CVImageBufferRef img = CMSampleBufferGetImageBuffer(sb);
@@ -100,21 +113,25 @@ typedef void (*render2_t)(id, SEL, void *, void *);
 
 static void hk_emit1(id self, SEL sel, void *sb) {
     ccp_latch(&g_hit1, "com.maurice.vcam.hit1");
+    ccp_strip_face((CMSampleBufferRef)sb);
     ccp_paint((CMSampleBufferRef)sb);
     if (imp_bwnode_emit) ((emit1_t)imp_bwnode_emit)(self, sel, sb);
 }
 static void hk_emit2(id self, SEL sel, void *sb, void *inp) {
     ccp_latch(&g_hit2, "com.maurice.vcam.hit2");
+    ccp_strip_face((CMSampleBufferRef)sb);
     ccp_paint((CMSampleBufferRef)sb);
     if (imp_bwnode_emit2) ((emit2_t)imp_bwnode_emit2)(self, sel, sb, inp);
 }
 static void hk_pxt(id self, SEL sel, void *sb) {
     ccp_latch(&g_hit3, "com.maurice.vcam.hit3");
+    ccp_strip_face((CMSampleBufferRef)sb);
     ccp_paint((CMSampleBufferRef)sb);
     if (imp_pixel_transfer) ((emit1_t)imp_pixel_transfer)(self, sel, sb);
 }
 static void hk_imgqueue(id self, SEL sel, void *sb, void *inp) {
     ccp_latch(&g_hit4, "com.maurice.vcam.hit4");
+    ccp_strip_face((CMSampleBufferRef)sb);
     ccp_paint((CMSampleBufferRef)sb);
     if (imp_imgqueue_sink) ((render2_t)imp_imgqueue_sink)(self, sel, sb, inp);
 }
