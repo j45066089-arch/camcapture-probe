@@ -80,20 +80,6 @@ static void ccp_paint(CMSampleBufferRef sb) {
     CVPixelBufferUnlockBaseAddress(img, 0);
 }
 
-/* --- Face-/Detect-Metadaten aus dem Main-Buffer strippen --- */
-static void ccp_strip_meta(CMSampleBufferRef sb) {
-    if (!sb) return;
-    const CFStringRef keys[] = {
-        CFSTR("DetectedFaceInfo"),
-        CFSTR("DetectedFacesInfo"),
-        CFSTR("FacesArray"),
-        CFSTR("MetadataDictionary"),
-        CFSTR("FaceRectDisplayBuffer"),
-    };
-    for (size_t i = 0; i < sizeof(keys)/sizeof(keys[0]); i++)
-        CMSetAttachment(sb, keys[i], NULL, kCMAttachmentMode_ShouldPropagate);
-}
-
 /* --- einmalige Diagnose: Attachments + Pixelformat + Klassen-Survey --- */
 static void ccp_diag(CMSampleBufferRef sb) {
     int expected = 0;
