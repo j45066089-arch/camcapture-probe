@@ -1,0 +1,8 @@
+Package: com.maurice.ccpsnoop
+Name: CCP Snoop
+Version: 1.0.0
+Architecture: iphoneos-arm64e
+Description: Listen for Darwin notifications from CamCaptureProbe and print survey bits
+Maintainer: Maurice
+Author: Maurice
+Section: Utilities

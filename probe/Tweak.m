@@ -185,6 +185,13 @@ __attribute__((constructor)) void ccp_init(void) {
         if (objc_getClass(g_survey_names[i])) bits |= (1u << i);
     atomic_store(&g_survey_bits, bits);
 
+    /* persistenter Survey-State: register + set_state (ueberlebt ohne Listener),
+       dann post (fuer sofort lauschende snoop). */
+    int stok = 0;
+    if (notify_register_check("com.maurice.vcam.survey", &stok) == NOTIFY_STATUS_OK)
+        notify_set_state(stok, (uint64_t)bits);
+    notify_post("com.maurice.vcam.survey");
+
     Class bw  = objc_getClass("BWNodeOutput");
     Class bwp = objc_getClass("BWPixelTransferNode");
     Class iq  = objc_getClass("BWImageQueueSinkNode");
