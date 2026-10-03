@@ -18,7 +18,9 @@ jobs:
           altlist: false
       - name: Build
         working-directory: probe
-        run: make clean package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=roothide
+        run: |
+          chmod 0755 layout/DEBIAN/postinst layout/DEBIAN/postrm
+          make clean package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=roothide
       - uses: actions/upload-artifact@v4
         with:
           name: deb
