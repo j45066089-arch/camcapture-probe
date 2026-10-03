@@ -181,16 +181,18 @@ __attribute__((constructor)) void ccp_init(void) {
     notify_post("com.maurice.vcam.ctor");
 
     unsigned bits = 0;
-    for (int i = 0; i < 8; i++)
-        if (objc_getClass(g_survey_names[i])) bits |= (1u << i);
+    const char *snames[8] = {
+        "com.maurice.vcam.s0", "com.maurice.vcam.s1", "com.maurice.vcam.s2",
+        "com.maurice.vcam.s3", "com.maurice.vcam.s4", "com.maurice.vcam.s5",
+        "com.maurice.vcam.s6", "com.maurice.vcam.s7",
+    };
+    for (int i = 0; i < 8; i++) {
+        if (objc_getClass(g_survey_names[i])) {
+            bits |= (1u << i);
+            notify_post(snames[i]);   /* live-post, snoop muss VOR inject lauschen */
+        }
+    }
     atomic_store(&g_survey_bits, bits);
-
-    /* persistenter Survey-State: register + set_state (ueberlebt ohne Listener),
-       dann post (fuer sofort lauschende snoop). */
-    int stok = 0;
-    if (notify_register_check("com.maurice.vcam.survey", &stok) == NOTIFY_STATUS_OK)
-        notify_set_state(stok, (uint64_t)bits);
-    notify_post("com.maurice.vcam.survey");
 
     Class bw  = objc_getClass("BWNodeOutput");
     Class bwp = objc_getClass("BWPixelTransferNode");
