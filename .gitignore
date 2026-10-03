@@ -1,0 +1,8 @@
+# nie .deb / build-artefakte committen
+*.deb
+dl*/
+packages/
+**/packages/
+*.dylib
+obj/
+.theos/
