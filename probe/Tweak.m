@@ -38,7 +38,7 @@ static IMP imp_face_proc     = NULL;   // BWFaceDetectionNode hook
 static IMP imp_meta_proc     = NULL;   // BWMetadataSourceNode hook
 
 static _Atomic int  g_hit1 = 0, g_hit2 = 0, g_hit3 = 0, g_hit4 = 0;
-static _Atomic int  g_face_hook = 0, g_meta_hook = 0;
+static _Atomic int  g_face1 = 0, g_face2 = 0, g_meta1 = 0, g_meta2 = 0;
 static _Atomic long g_frame = 0;
 
 /* ---------- Flat-paint (kein Gesicht auffindbar) ---------- */
@@ -139,24 +139,24 @@ typedef void (*emit1_t)(id, SEL, void *);
 typedef void (*emit2_t)(id, SEL, void *, void *);
 typedef void (*render2_t)(id, SEL, void *, void *);
 
-/* Detection-Hooks: flat-painten, dann Original-IMP (falls vorhanden) */
+/* Detection-Hooks: flat-painten (einmalig notifyn) + Original-IMP */
 static void hk_face1(id self, SEL sel, void *sb) {
-    atomic_store(&g_face_hook, 1);
+    ccp_latch(&g_face1, "com.maurice.vcam.face1");
     ccp_paint_flat((CMSampleBufferRef)sb);
     if (imp_face_proc) ((emit1_t)imp_face_proc)(self, sel, sb);
 }
 static void hk_face2(id self, SEL sel, void *sb, void *inp) {
-    atomic_store(&g_face_hook, 1);
+    ccp_latch(&g_face2, "com.maurice.vcam.face2");
     ccp_paint_flat((CMSampleBufferRef)sb);
     if (imp_face_proc) ((emit2_t)imp_face_proc)(self, sel, sb, inp);
 }
 static void hk_meta1(id self, SEL sel, void *sb) {
-    atomic_store(&g_meta_hook, 1);
+    ccp_latch(&g_meta1, "com.maurice.vcam.meta1");
     ccp_paint_flat((CMSampleBufferRef)sb);
     if (imp_meta_proc) ((emit1_t)imp_meta_proc)(self, sel, sb);
 }
 static void hk_meta2(id self, SEL sel, void *sb, void *inp) {
-    atomic_store(&g_meta_hook, 1);
+    ccp_latch(&g_meta2, "com.maurice.vcam.meta2");
     ccp_paint_flat((CMSampleBufferRef)sb);
     if (imp_meta_proc) ((emit2_t)imp_meta_proc)(self, sel, sb, inp);
 }

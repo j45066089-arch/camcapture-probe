@@ -11,7 +11,7 @@
 #import <string.h>
 
 typedef struct { const char *name; int token; } NReg;
-static NReg regs[16];
+static NReg regs[24];
 static int regc = 0;
 
 static void install(const char *name) {
@@ -35,10 +35,12 @@ int main(int argc, char **argv) {
         "com.maurice.vcam.s6", "com.maurice.vcam.s7",
         "com.maurice.vcam.hit1", "com.maurice.vcam.hit2",
         "com.maurice.vcam.hit3", "com.maurice.vcam.hit4",
+        "com.maurice.vcam.face1", "com.maurice.vcam.face2",
+        "com.maurice.vcam.meta1", "com.maurice.vcam.meta2",
         NULL
     };
     regc = 0;
-    for (int i = 0; names[i] && regc < 16; i++) install(names[i]);
+    for (int i = 0; names[i] && regc < 24; i++) install(names[i]);
     printf("LISTENING %d s\n", secs);
     fflush(stdout);
     sleep(secs);
