@@ -207,12 +207,22 @@ static void ccp_hook(Class c, SEL sel, IMP *orig_out, IMP newImp) {
 
 __attribute__((constructor)) void ccp_init(void) {
     notify_post("com.maurice.vcam.ctor");
-    ccp_fd = open("/var/tmp/ccp_diag.txt", O_CREAT|O_TRUNC|O_WRONLY, 0644);
-    if (ccp_fd < 0) {
-        /* /var/tmp write blockt -> 2. Versuch /tmp */
-        ccp_fd = open("/tmp/ccp_diag.txt", O_CREAT|O_TRUNC|O_WRONLY, 0644);
+    /* Daemon laeuft als uid 501 (mobile), HOME=/var/mobile.
+     * temporary-sandbox blockt /var/tmp + /tmp -> mobile-Home probieren. */
+    const char *paths[] = {
+        "/var/mobile/Library/ccp_diag.txt",
+        "/var/mobile/Documents/ccp_diag.txt",
+        "/var/mobile/ccp_diag.txt",
+        "/var/tmp/ccp_diag.txt",
+        "/tmp/ccp_diag.txt",
+        NULL
+    };
+    ccp_fd = -1;
+    for (int i = 0; paths[i]; i++) {
+        ccp_fd = open(paths[i], O_CREAT|O_TRUNC|O_WRONLY, 0644);
+        if (ccp_fd >= 0) break;
     }
-    ccp_wl("CTOR\n");
+    ccp_wl("CTOR");
 
     /* welche face/metadata node existiert -> binär-Survey in die Diag-Datei */
         {
