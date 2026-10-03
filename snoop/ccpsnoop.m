@@ -8,7 +8,7 @@
 #import <stdio.h>
 #import <string.h>
 
-typedef struct { const char *name; uint32_t token; } NReg;
+typedef struct { const char *name; int token; } NReg;
 static NReg regs[16];
 static int regc = 0;
 
