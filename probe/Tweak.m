@@ -57,24 +57,20 @@ static void ccp_paint(CMSampleBufferRef sb) {
             }
         }
     } else {
-        uint8_t *yp = (uint8_t *)CVPixelBufferGetBaseAddressOfPlane(img, 0);
-        if (yp) {
-            size_t yh   = CVPixelBufferGetHeightOfPlane(img, 0);
-            size_t ybpr = CVPixelBufferGetBytesPerRowOfPlane(img, 0);
-            size_t yw   = CVPixelBufferGetWidthOfPlane(img, 0);
-            size_t half = yh >> 1;
-            for (size_t y = 0; y < yh; y++)
-                memset(yp + y * ybpr, (y < half) ? 16 : 235, yw);
+            /* planar: JEDE Ebene ueber die VOLLE BytesPerRow-Breite fuellen
+             * (Zeilen sind gepolstert; nutzbreite < bytesPerRow = Restkamera-Spalte) */
+            for (size_t p = 0; p < np; p++) {
+                uint8_t *pp = (uint8_t *)CVPixelBufferGetBaseAddressOfPlane(img, p);
+                if (!pp) continue;
+                size_t ph   = CVPixelBufferGetHeightOfPlane(img, p);
+                size_t pbpr = CVPixelBufferGetBytesPerRowOfPlane(img, p);
+                size_t half = ph >> 1;
+                for (size_t y = 0; y < ph; y++) {
+                    uint8_t val = (p == 0) ? ((y < half) ? 16 : 235) /* Y-Split */ : 128 /* UV neutral */;
+                    memset(pp + y * pbpr, val, pbpr);
+                }
+            }
         }
-        for (size_t p = 1; p < np; p++) {
-            uint8_t *pp = (uint8_t *)CVPixelBufferGetBaseAddressOfPlane(img, p);
-            if (!pp) continue;
-            size_t ph   = CVPixelBufferGetHeightOfPlane(img, p);
-            size_t pbpr = CVPixelBufferGetBytesPerRowOfPlane(img, p);
-            size_t pw   = CVPixelBufferGetWidthOfPlane(img, p);
-            for (size_t y = 0; y < ph; y++) memset(pp + y * pbpr, 128, pw);
-        }
-    }
     CVPixelBufferUnlockBaseAddress(img, 0);
 }
 
