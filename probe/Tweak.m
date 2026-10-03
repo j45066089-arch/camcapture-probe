@@ -6,60 +6,63 @@
 #import <notify.h>
 #import <stdatomic.h>
 #import <string.h>
-#import <unistd.h>
-#import <fcntl.h>
-#import <strings.h>
-#import <stdlib.h>
-#import <stdio.h>
 
-/* CamCaptureProbe v4 — v3 (full-plane fill, VERIFIZIERT) + face-metadata strip + diagnostics
+/* CamCaptureProbe v7 — animierter Vollbild-Feed (prozedural, kein Datei/Socket)
  *
- * Frame-Swap: VERIFIZIERT (Kamera + Galerie komplett getauscht).
- * Offen: Gesichtstracking laeuft weiter -> SEPARATER Metadata-Feed, nicht der Pixel-Buffer.
+ * Ziel: beweisen, dass JEDER Frame kontinuierlich durch den Hook neu geschrieben
+ * wird (bewegter heller Balken auf dunklem Grund). Damit ist der zentrale
+ * Swap-Pfad der LordVCAM-v2 Ebene fest etabliert; hier wird als Naechstes der
+ * echte Transport (H.264 -> CVPixelBuffer) eingeklinkt.
  *
- * v4 Neuerungen:
- *   (1) im emit-Hook die Gesichts-Metadaten-Attachments strippen
- *   (2) beim ERSTEN Frame: Attachment-Keys + Pixelformat + Face/Metadata/Track-Klassen-Survey
- *       nach /var/tmp/ccp_diag.txt schreiben (Test: laesst temporary-sandbox /var/tmp-Write zu?)
+ * Paint:
+ *   YUV planar: Y=16 Grund, Y=235 wandernder Balken, Chroma 128 neutral.
+ *   32BGRA:     dunkelblauer Grund, weisser wandernder Balken.
+ *
+ * Hooks (bewaehrt, verifiziert):
+ *   hit1  BWNodeOutput          emitSampleBuffer:
+ *   hit2  BWNodeOutput          emitSampleBuffer:forInput:
+ *   hit3  BWPixelTransferNode   emitSampleBuffer:
+ *   hit4  BWImageQueueSinkNode  renderSampleBuffer:forInput:
  */
-
-#define NOTIFY_FACEBIT "com.maurice.vcam.facebit"
 
 static IMP imp_bwnode_emit    = NULL;
 static IMP imp_bwnode_emit2   = NULL;
 static IMP imp_pixel_transfer = NULL;
 static IMP imp_imgqueue_sink  = NULL;
 
-static _Atomic int g_hit1 = 0, g_hit2 = 0, g_hit3 = 0, g_hit4 = 0;
-static _Atomic int g_diag_done = 0;
+static _Atomic int  g_hit1 = 0, g_hit2 = 0, g_hit3 = 0, g_hit4 = 0;
+static _Atomic long g_frame = 0;
 
-static int ccp_fd = -1;
-
-static void ccp_w(const char *s) { if (ccp_fd >= 0) write(ccp_fd, s, strlen(s)); }
-static void ccp_wl(const char *s) { ccp_w(s); ccp_w("\n"); }
-
-/* --- v3 full-plane fill (verifiziert) --- */
 static void ccp_paint(CMSampleBufferRef sb) {
     if (!sb) return;
     CVImageBufferRef img = CMSampleBufferGetImageBuffer(sb);
     if (!img) return;
     if (kCVReturnSuccess != CVPixelBufferLockBaseAddress(img, 0)) return;
 
+    long f  = atomic_fetch_add_explicit(&g_frame, 1, memory_order_relaxed);
     size_t np = CVPixelBufferGetPlaneCount(img);
+
     if (np == 0) {
         uint8_t *base = (uint8_t *)CVPixelBufferGetBaseAddress(img);
         if (base) {
             size_t h   = CVPixelBufferGetHeight(img);
             size_t bpr = CVPixelBufferGetBytesPerRow(img);
-            size_t half = h >> 1;
+            size_t w   = CVPixelBufferGetWidth(img);
             if (CVPixelBufferGetPixelFormatType(img) == kCVPixelFormatType_32BGRA) {
+                size_t bar = (size_t)((f * 6) % (w ? w : 1));
+                size_t bw  = w / 10; if (bw == 0) bw = 1;
                 for (size_t y = 0; y < h; y++) {
                     uint8_t *row = base + y * bpr;
-                    uint8_t b, g, r;
-                    if (y < half) { b = 0; g = 0; r = 255; }
-                    else          { b = 255; g = 255; r = 0; }
-                    for (size_t x = 0; x < (bpr >> 2); x++) {
-                        row[x*4+0]=b; row[x*4+1]=g; row[x*4+2]=r; row[x*4+3]=255;
+                    for (size_t x = 0; x < w; x++) {
+                        row[x*4+0] = 25;  /* B */
+                        row[x*4+1] = 20;  /* G */
+                        row[x*4+2] = 60;  /* R */
+                        row[x*4+3] = 255;
+                    }
+                    size_t end = bar + bw; if (end > w) end = w;
+                    for (size_t x = bar; x < end; x++) {
+                        row[x*4+0] = 255; row[x*4+1] = 255;
+                        row[x*4+2] = 255; row[x*4+3] = 255;
                     }
                 }
             } else {
@@ -72,75 +75,22 @@ static void ccp_paint(CMSampleBufferRef sb) {
             if (!pp) continue;
             size_t ph   = CVPixelBufferGetHeightOfPlane(img, p);
             size_t pbpr = CVPixelBufferGetBytesPerRowOfPlane(img, p);
-            size_t half = ph >> 1;
-            for (size_t y = 0; y < ph; y++)
-                memset(pp + y*pbpr, (p==0) ? ((y<half)?16:235) : 128, pbpr);
+            size_t pw   = CVPixelBufferGetWidthOfPlane(img, p);
+            if (p == 0) {
+                size_t bar = (size_t)((f * 3) % (pw ? pw : 1));
+                size_t bw  = pw / 8; if (bw == 0) bw = 1;
+                for (size_t y = 0; y < ph; y++) {
+                    memset(pp + y * pbpr, 16, pbpr);
+                    size_t end = bar + bw; if (end > pw) end = pw;
+                    memset(pp + y * pbpr + bar, 235, end - bar);
+                }
+            } else {
+                for (size_t y = 0; y < ph; y++)
+                    memset(pp + y * pbpr, 128, pbpr);
+            }
         }
     }
     CVPixelBufferUnlockBaseAddress(img, 0);
-}
-
-/* --- einmalige Diagnose: Attachments + Pixelformat + Klassen-Survey --- */
-static void ccp_diag(CMSampleBufferRef sb) {
-    int expected = 0;
-    if (!atomic_compare_exchange_strong_explicit(&g_diag_done, &expected, 1,
-                                                 memory_order_relaxed, memory_order_relaxed))
-        return;
-    char b[1024];
-    ccp_wl("=== FRAME DIAG ===");
-    CVImageBufferRef img = CMSampleBufferGetImageBuffer(sb);
-    if (img) {
-        snprintf(b, sizeof b, "pixfmt=0x%x planes=%zu w=%zu h=%zu",
-                 (unsigned)CVPixelBufferGetPixelFormatType(img),
-                 CVPixelBufferGetPlaneCount(img),
-                 CVPixelBufferGetWidth(img), CVPixelBufferGetHeight(img));
-        ccp_wl(b);
-        for (size_t p = 0; p < CVPixelBufferGetPlaneCount(img); p++) {
-            snprintf(b, sizeof b, "  plane%zu w=%zu h=%zu bpr=%zu",
-                     p, CVPixelBufferGetWidthOfPlane(img,p),
-                     CVPixelBufferGetHeightOfPlane(img,p),
-                     CVPixelBufferGetBytesPerRowOfPlane(img,p));
-            ccp_wl(b);
-        }
-    }
-    ccp_wl("--- attachments ---");
-    CFDictionaryRef atts = CMCopyDictionaryOfAttachments(kCFAllocatorDefault, sb, kCMAttachmentMode_ShouldPropagate);
-    if (atts) {
-        CFIndex n = CFDictionaryGetCount(atts);
-        const void **keys = (const void **)malloc(sizeof(void*) * (n ? n : 1));
-        CFDictionaryGetKeysAndValues(atts, keys, NULL);
-        for (CFIndex i = 0; i < n; i++) {
-            if (CFGetTypeID(keys[i]) == CFStringGetTypeID()) {
-                snprintf(b, sizeof b, "  key=%s", [(__bridge NSString*)keys[i] UTF8String]);
-                ccp_wl(b);
-            }
-        }
-        free(keys);
-        CFRelease(atts);
-    }
-    ccp_wl("=== CLASS SURVEY (face/meta/track/detect/vision/landmark/body) ===");
-    int nc = objc_getClassList(NULL, 0);
-    if (nc > 0) {
-        Class *cls = (Class*)malloc(sizeof(Class)*nc);
-        int got = objc_getClassList(cls, nc);
-        int cnt = 0;
-        for (int i = 0; i < got; i++) {
-            const char *n = class_getName(cls[i]);
-            if (!n) continue;
-            if (strcasestr(n,"Face") || strcasestr(n,"Metadata") ||
-                strcasestr(n,"Track") || strcasestr(n,"Detect") ||
-                strcasestr(n,"Vision") || strcasestr(n,"landmark") ||
-                strcasestr(n,"Body") || strcasestr(n,"VNImage")) {
-                ccp_wl(n);
-                cnt++;
-            }
-        }
-        snprintf(b, sizeof b, "face-meta-classes-total=%d", cnt);
-        ccp_wl(b);
-        free(cls);
-    }
-    ccp_wl("=== END DIAG ===");
-    notify_post("com.maurice.vcam.diag");
 }
 
 static void ccp_latch(_Atomic int *flag, const char *name) {
@@ -157,29 +107,21 @@ typedef void (*render2_t)(id, SEL, void *, void *);
 
 static void hk_emit1(id self, SEL sel, void *sb) {
     ccp_latch(&g_hit1, "com.maurice.vcam.hit1");
-    
-    ccp_diag((CMSampleBufferRef)sb);
     ccp_paint((CMSampleBufferRef)sb);
     if (imp_bwnode_emit) ((emit1_t)imp_bwnode_emit)(self, sel, sb);
 }
 static void hk_emit2(id self, SEL sel, void *sb, void *inp) {
     ccp_latch(&g_hit2, "com.maurice.vcam.hit2");
-    
-    ccp_diag((CMSampleBufferRef)sb);
     ccp_paint((CMSampleBufferRef)sb);
     if (imp_bwnode_emit2) ((emit2_t)imp_bwnode_emit2)(self, sel, sb, inp);
 }
 static void hk_pxt(id self, SEL sel, void *sb) {
     ccp_latch(&g_hit3, "com.maurice.vcam.hit3");
-    
-    ccp_diag((CMSampleBufferRef)sb);
     ccp_paint((CMSampleBufferRef)sb);
     if (imp_pixel_transfer) ((emit1_t)imp_pixel_transfer)(self, sel, sb);
 }
 static void hk_imgqueue(id self, SEL sel, void *sb, void *inp) {
     ccp_latch(&g_hit4, "com.maurice.vcam.hit4");
-    
-    ccp_diag((CMSampleBufferRef)sb);
     ccp_paint((CMSampleBufferRef)sb);
     if (imp_imgqueue_sink) ((render2_t)imp_imgqueue_sink)(self, sel, sb, inp);
 }
@@ -193,38 +135,6 @@ static void ccp_hook(Class c, SEL sel, IMP *orig_out, IMP newImp) {
 
 __attribute__((constructor)) void ccp_init(void) {
     notify_post("com.maurice.vcam.ctor");
-    /* Daemon laeuft als uid 501 (mobile), HOME=/var/mobile.
-     * temporary-sandbox blockt /var/tmp + /tmp -> mobile-Home probieren. */
-    const char *paths[] = {
-        "/var/mobile/Library/ccp_diag.txt",
-        "/var/mobile/Documents/ccp_diag.txt",
-        "/var/mobile/ccp_diag.txt",
-        "/var/tmp/ccp_diag.txt",
-        "/tmp/ccp_diag.txt",
-        NULL
-    };
-    ccp_fd = -1;
-    for (int i = 0; paths[i]; i++) {
-        ccp_fd = open(paths[i], O_CREAT|O_TRUNC|O_WRONLY, 0644);
-        if (ccp_fd >= 0) break;
-    }
-    ccp_wl("CTOR");
-
-    /* welche face/metadata node existiert -> binär-Survey in die Diag-Datei */
-        {
-            const char *fc[] = {
-                "BWFaceDetectionNode", "BWMetadataSourceNode", "FigCaptureMetadata",
-                "FigFaceDetect", "BWFaceSegmentation", "BWFaceIntelligenceEstimator",
-                "AVCaptureMetadataOutput", "AVCaptureSession", NULL
-            };
-            ccp_wl("--- face/meta nodes ---");
-            for (int i = 0; fc[i]; i++) {
-                char b[256];
-                snprintf(b, sizeof b, "%s%s", fc[i], objc_getClass(fc[i]) ? " = PRESENT" : " = missing");
-                ccp_wl(b);
-            }
-            notify_post(NOTIFY_FACEBIT);
-        }
 
     Class bw  = objc_getClass("BWNodeOutput");
     Class bwp = objc_getClass("BWPixelTransferNode");
