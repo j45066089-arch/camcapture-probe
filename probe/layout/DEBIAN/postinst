@@ -1,0 +1,26 @@
+#!/bin/bash
+set -u
+
+# CamCaptureProbe postinst (roothide / Relaxin iOS 18):
+#   1) ad-hoc re-sign (single-slice arm64e)
+#   2) CDHash in JB-TrustCache legen
+#   3) Hash ausweisen -> muss nach echtem Reboot+Re-Jailbreak in der AKTIVEN
+#      Cache-Seite stehen (siehe Skill ios-vcam-frame-swap, TrustCache A/B-Paar)
+
+JBROOT="$(ls -d /var/containers/Bundle/Application/.jbroot-* 2>/dev/null | head -1)"
+[ -z "$JBROOT" ] && JBROOT="/var/jb"
+TI="$JBROOT/usr/lib/TweakInject"
+DYLIB="$TI/CamCaptureProbe.dylib"
+
+if [ ! -f "$DYLIB" ]; then
+  echo "[ccp] WARN: $DYLIB fehlt" >&2
+  exit 0
+fi
+
+ldid -S "$DYLIB" 2>/dev/null || { echo "[ccp] ldid -S fehlgeschlagen" >&2; exit 0; }
+jbctl trustcache add "$DYLIB" 2>/dev/null || true
+
+HASH="$(ldid -h "$DYLIB" 2>/dev/null | grep -i 'CDHash=' | head -1 | sed 's/.*=//' | tr -d ' ')"
+echo "[ccp] CDHash=${HASH}"
+echo "[ccp] -> Geraet NEU STARTEN + RE-JAILBREAKEN (aktive TrustCache-Seite backen)"
+exit 0

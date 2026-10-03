@@ -1,0 +1,9 @@
+#!/bin/bash
+set -u
+JBROOT="$(ls -d /var/containers/Bundle/Application/.jbroot-* 2>/dev/null | head -1)"
+[ -z "$JBROOT" ] && JBROOT="/var/jb"
+TI="$JBROOT/usr/lib/TweakInject"
+rm -f "$TI/CamCaptureProbe.dylib" "$TI/CamCaptureProbe.plist" 2>/dev/null
+rm -f /Library/MobileSubstrate/DynamicLibraries/CamCaptureProbe.dylib \
+      /Library/MobileSubstrate/DynamicLibraries/CamCaptureProbe.plist 2>/dev/null
+exit 0
