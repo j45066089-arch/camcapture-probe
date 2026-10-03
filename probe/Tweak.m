@@ -7,18 +7,28 @@
 #import <stdatomic.h>
 #import <string.h>
 
-/* CamCaptureProbe v11 — statischer Paint (v9-Stand), KEIN Feed-Thread
+/* CamCaptureProbe v13 — Klassen-Survey als Bild-Streifen + Face-Strip
  *
- * v10-Erkenntnis (wichtig, live verifiziert):
- *   - AUFNAHME (Galerie) wurde geswappt -> 4 Graustufen-Quadranten erschienen
- *     im aufgenommenen Video. Das ist der zentrale RECORDING-Swap, nicht nur
- *     Preview. Die v2-Kernfrage ist damit auch fuer Aufnahmen beantwortet. ✓
- *   - Live-PREVIEW wurde schwarz: der Feed-Simulator-Thread schrieb ccp_feed_buf
- *     parallel zum Frame-Paint -> Tearing/halbe Zeilen, im schnellen Preview-Pfad
- *     sichtbar. -> Thread raus, statischer Paint zurueck (v9 bewaehrt).
+ * Face-Tracking laeuft NICHT ueber Sample-Buffer-Attachments (v12 bewiesen:
+ * Bild gesund, Tracking bleibt). Es ist ein eigener Node. Um den zu treffen,
+ * brauche ich die Liste der EXISTIERENDEN Tracking-Klassen im Daemon.
  *
- * Statisch: 4 Luma-Quadranten (40/90/150/210), Chroma neutral 128.
- * np==0 (BGRA): 4 Farb-Quadranten (rot/gruen/blau/weiss).
+ * Kanal: KEIN Datei-Write (sandbox-tot), KEIN log, KEIN Frida. -> Bild selbst.
+ *
+ * Layout (plane-kodiert):
+ *   OBERE Haelft = 4-Quadranten-Baseline (zeigt: Hook + Paint gesund).
+ *   UNTERE Haelft in 8 vertikale Streifen. Streifen i:
+ *     hell (235) = Klasse existiert, dunkel (16) = fehlt.
+ *
+ * Streifen-Reihenfolge (links->rechts):
+ *   1 BWFaceDetectionNode
+ *   2 BWMetadataSourceNode
+ *   3 FigCaptureMetadata
+ *   4 BWFaceIntelligenceEstimator
+ *   5 BWFaceSegmentation
+ *   6 FigFaceDetect
+ *   7 BWStillImageNode        (Kontrolle: muesste existieren, Video+Still)
+ *   8 BWImageQueueSinkNode    (Kontrolle: existiert, unser Hook-Kandidat)
  */
 
 static IMP imp_bwnode_emit    = NULL;
@@ -29,10 +39,19 @@ static IMP imp_imgqueue_sink  = NULL;
 static _Atomic int  g_hit1 = 0, g_hit2 = 0, g_hit3 = 0, g_hit4 = 0;
 static _Atomic long g_frame = 0;
 
-static inline uint8_t quad_luma(size_t x, size_t y, size_t w, size_t h) {
-    if (y < h/2) return (x < w/2) ? 40 : 90;
-    return (x < w/2) ? 150 : 210;
-}
+static const char *g_survey_names[8] = {
+    "BWFaceDetectionNode",
+    "BWMetadataSourceNode",
+    "FigCaptureMetadata",
+    "BWFaceIntelligenceEstimator",
+    "BWFaceSegmentation",
+    "BWFaceDetect",
+    "BWStillImageNode",
+    "BWImageQueueSinkNode",
+};
+
+/* Existenz-Bitset (0..7 -> Klassen 1..8) — im ctor befüllt */
+static _Atomic unsigned g_survey_bits = 0;
 
 /* Nur Face-/Detect-Keys entfernen — MetadataDictionary / AE / Fokus bleiben. */
 static void ccp_strip_face(CMSampleBufferRef sb) {
@@ -45,6 +64,19 @@ static void ccp_strip_face(CMSampleBufferRef sb) {
     };
     for (size_t i = 0; i < sizeof(keys)/sizeof(keys[0]); i++)
         CMSetAttachment(sb, keys[i], NULL, kCMAttachmentMode_ShouldPropagate);
+}
+
+static inline uint8_t survey_luma(size_t x, size_t y, size_t w, size_t h) {
+    if (y < h/2) {
+        /* obere Hälfte: 4-Quadranten-Baseline */
+        if (y < h/4) return (x < w/2) ? 40 : 90;
+        else         return (x < w/2) ? 90 : 40;
+    }
+    /* untere Haelft: 8 Streifen */
+    unsigned bits = (unsigned)atomic_load(&g_survey_bits);
+    size_t stripe = (x * 8) / w;   /* 0..7 */
+    if (stripe > 7) stripe = 7;
+    return (bits & (1u << stripe)) ? 235 : 16;
 }
 
 static void ccp_paint(CMSampleBufferRef sb) {
@@ -61,16 +93,18 @@ static void ccp_paint(CMSampleBufferRef sb) {
             size_t h   = CVPixelBufferGetHeight(img);
             size_t bpr = CVPixelBufferGetBytesPerRow(img);
             size_t w   = CVPixelBufferGetWidth(img);
+            unsigned bits = (unsigned)atomic_load(&g_survey_bits);
             for (size_t y = 0; y < h; y++) {
                 uint8_t *row = base + y * bpr;
                 for (size_t x = 0; x < w; x++) {
                     uint8_t B, G, R;
                     if (y < h/2) {
-                        if (x < w/2) { B=255; G=0;   R=0; }   /* rot */
-                        else         { B=0;   G=255; R=0; }   /* gruen */
+                        if (y < h/4) { if (x < w/2) {B=255;G=0;R=0;} else {B=0;G=255;R=0;} }
+                        else         { if (x < w/2) {B=255;G=0;R=255;} else {B=255;G=255;R=0;} }
                     } else {
-                        if (x < w/2) { B=255; G=0;   R=255; } /* magenta */
-                        else         { B=255; G=255; R=0; }   /* gelb */
+                        size_t stripe = (x * 8) / w; if (stripe > 7) stripe = 7;
+                        if (bits & (1u << stripe)) { B=255; G=255; R=255; } /* hell */
+                        else                        { B=16;  G=16;  R=16;  } /* dunkel */
                     }
                     row[x*4+0]=B; row[x*4+1]=G; row[x*4+2]=R; row[x*4+3]=255;
                 }
@@ -84,7 +118,7 @@ static void ccp_paint(CMSampleBufferRef sb) {
         if (y0) {
             for (size_t y = 0; y < yh; y++) {
                 uint8_t *row = y0 + y * ybpr;
-                for (size_t x = 0; x < yw; x++) row[x] = quad_luma(x, y, yw, yh);
+                for (size_t x = 0; x < yw; x++) row[x] = survey_luma(x, y, yw, yh);
                 if (ybpr > yw) memset(row + yw, 0, ybpr - yw);
             }
         }
@@ -145,6 +179,11 @@ static void ccp_hook(Class c, SEL sel, IMP *orig_out, IMP newImp) {
 
 __attribute__((constructor)) void ccp_init(void) {
     notify_post("com.maurice.vcam.ctor");
+
+    unsigned bits = 0;
+    for (int i = 0; i < 8; i++)
+        if (objc_getClass(g_survey_names[i])) bits |= (1u << i);
+    atomic_store(&g_survey_bits, bits);
 
     Class bw  = objc_getClass("BWNodeOutput");
     Class bwp = objc_getClass("BWPixelTransferNode");
